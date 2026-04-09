@@ -24,6 +24,12 @@ import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Multi-strike: scan ALL strikes per event/series, not just one ────────────
+MULTI_STRIKE = os.getenv("MULTI_STRIKE", "true").lower() == "true"
+# When fetching markets, iterate through ALL contracts in each series/event
+# and evaluate each strike independently. No single-ticker filtering.
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("premarket")
 
