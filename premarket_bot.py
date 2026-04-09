@@ -48,6 +48,34 @@ def shadow_log(opportunity: dict, taken: bool, reason: str = ""):
         pass
 
 
+
+# ─── Regime Detection — pause trading during extreme volatility ────────────
+import statistics as _stats
+
+REGIME_WINDOW = int(os.getenv("REGIME_WINDOW", "20"))
+REGIME_THRESHOLD = float(os.getenv("REGIME_THRESHOLD", "3.0"))
+_regime_prices: list[float] = []
+
+def check_regime(price: float) -> str:
+    """Returns 'CALM', 'ELEVATED', or 'CRASH'. Skip trades during CRASH."""
+    _regime_prices.append(price)
+    if len(_regime_prices) > REGIME_WINDOW:
+        _regime_prices.pop(0)
+    if len(_regime_prices) < 5:
+        return "CALM"
+    rets = [(b - a) / a for a, b in zip(_regime_prices[:-1], _regime_prices[1:])]
+    if not rets:
+        return "CALM"
+    mu = _stats.mean(rets)
+    sd = _stats.stdev(rets) if len(rets) > 1 else 0.01
+    z = abs(rets[-1] - mu) / max(sd, 0.0001)
+    if z > REGIME_THRESHOLD:
+        return "CRASH"
+    elif z > REGIME_THRESHOLD * 0.6:
+        return "ELEVATED"
+    return "CALM"
+
+
 def _normalize_market(m: dict) -> dict:
     """Normalize Kalshi API v2 dollar-denominated fields to legacy field names."""
     if "yes_bid_dollars" in m and "yes_bid" not in m:
@@ -403,6 +431,12 @@ async def main():
                             log.info(f"[PAPER] Risk guard would block: {reason}")
 
                     if await place_order(client, ticker, trade["side"], price, contracts, paper, trade["note"]):
+                        # ── Regime detection ──
+                        regime = check_regime(float(price))
+                        if regime == "CRASH":
+                            log.warning("REGIME CRASH on kalshi_premarket_bot — skipping trade")
+                            shadow_log({"bot": "kalshi_premarket_bot", "regime": regime}, taken=False, reason="crash regime")
+                            continue
                         shadow_log({"bot": "premarket", "ticker": ticker, "side": trade["side"], "price": price, "edge": trade["edge"], "contracts": contracts}, taken=True)
                         cooldown.mark(cd_key)
                         trades += 1
