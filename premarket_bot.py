@@ -27,6 +27,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("premarket")
 
+from risk_guard import RiskManager
+risk_manager = RiskManager()
+
 
 def _normalize_market(m: dict) -> dict:
     """Normalize Kalshi API v2 dollar-denominated fields to legacy field names."""
@@ -361,6 +364,18 @@ async def main():
 
                     log.info(f"[TRADE] {ticker} | {trade['side'].upper()} {contracts}ct @ {price}¢ | "
                              f"edge={trade['edge']*100:.1f}% | {trade['note']}")
+
+                    # ── Risk Guard check ──
+                    if not PAPER_MODE:
+                        allowed, reason, capped = risk_manager.pre_trade_check(ticker, price, contracts, trade["side"], bot_name="premarket-bot")
+                        if not allowed:
+                            log.warning(f"Risk guard blocked: {reason}")
+                            continue
+                        contracts = capped
+                    else:
+                        allowed, reason, capped = risk_manager.pre_trade_check(ticker, price, contracts, trade["side"], bot_name="premarket-bot")
+                        if not allowed:
+                            log.info(f"[PAPER] Risk guard would block: {reason}")
 
                     if await place_order(client, ticker, trade["side"], price, contracts, paper, trade["note"]):
                         cooldown.mark(cd_key)
