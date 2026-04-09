@@ -58,8 +58,10 @@ PAPER_MODE        = os.getenv("PAPER_MODE", "true").lower() == "true"
 PAPER_BALANCE     = float(os.getenv("PAPER_BALANCE", "5000"))
 BET_SIZE_USD      = float(os.getenv("BET_SIZE_USD", "12"))
 MAX_BET_USD       = float(os.getenv("MAX_BET_USD", "35"))
+KELLY_FRACTION    = float(os.getenv("KELLY_FRACTION", "1.0"))
 MIN_MOVE_PCT      = float(os.getenv("MIN_MOVE_PCT", "0.8"))   # min % premarket move to signal
 MIN_EDGE          = float(os.getenv("MIN_EDGE", "0.06"))
+MAKER_FEE         = float(os.getenv("MAKER_FEE", "0.0175"))
 POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC", "900"))
 
 # Tracked symbols → Kalshi series
@@ -224,7 +226,7 @@ def find_premarket_trade(markets: list, quote: PremarketQuote) -> Optional[dict]
             proximity = max(0, min(proximity, 1))
             true_prob = confidence * proximity
             edge = true_prob - yes_ask / 100
-            if edge > best_edge and edge >= MIN_EDGE:
+            if edge - MAKER_FEE > 0 and edge > best_edge and edge >= MIN_EDGE:
                 best_edge = edge
                 best = {"market": m, "side": "yes", "price": yes_ask, "edge": edge,
                         "note": f"{quote.symbol} +{quote.change_pct:.1f}% premarket → YES above ${threshold:.0f}"}
@@ -234,7 +236,7 @@ def find_premarket_trade(markets: list, quote: PremarketQuote) -> Optional[dict]
             proximity = max(0, min(proximity, 1))
             true_prob = confidence * proximity
             edge = true_prob - yes_ask / 100
-            if edge > best_edge and edge >= MIN_EDGE:
+            if edge - MAKER_FEE > 0 and edge > best_edge and edge >= MIN_EDGE:
                 best_edge = edge
                 best = {"market": m, "side": "yes", "price": yes_ask, "edge": edge,
                         "note": f"{quote.symbol} {quote.change_pct:.1f}% premarket → YES below ${threshold:.0f}"}
@@ -243,7 +245,7 @@ def find_premarket_trade(markets: list, quote: PremarketQuote) -> Optional[dict]
             # Strong up move → won't fall below a lower threshold → buy NO
             true_prob_no = min(confidence * 0.85, 0.80)
             edge = true_prob_no - no_ask / 100
-            if edge > best_edge and edge >= MIN_EDGE:
+            if edge - MAKER_FEE > 0 and edge > best_edge and edge >= MIN_EDGE:
                 best_edge = edge
                 best = {"market": m, "side": "no", "price": no_ask, "edge": edge,
                         "note": f"{quote.symbol} +{quote.change_pct:.1f}% premarket → NO below ${threshold:.0f}"}
@@ -252,7 +254,7 @@ def find_premarket_trade(markets: list, quote: PremarketQuote) -> Optional[dict]
             # Strong down move → won't reach higher threshold → buy NO
             true_prob_no = min(confidence * 0.85, 0.80)
             edge = true_prob_no - no_ask / 100
-            if edge > best_edge and edge >= MIN_EDGE:
+            if edge - MAKER_FEE > 0 and edge > best_edge and edge >= MIN_EDGE:
                 best_edge = edge
                 best = {"market": m, "side": "no", "price": no_ask, "edge": edge,
                         "note": f"{quote.symbol} {quote.change_pct:.1f}% premarket → NO above ${threshold:.0f}"}
@@ -359,7 +361,12 @@ async def main():
                         continue
 
                     price     = trade["price"]
-                    contracts = max(1, min(int(BET_SIZE_USD * 100 / price), int(MAX_BET_USD * 100 / price)))
+                    # Kelly criterion sizing
+                    market_prob = price / 100
+                    model_prob = min(0.95, market_prob + trade["edge"])
+                    kelly_f = max(0, (model_prob - market_prob) / (1 - market_prob)) if market_prob < 1 else 0
+                    kelly_bet = max(1, min(ledger.balance * kelly_f * KELLY_FRACTION, MAX_BET_USD))
+                    contracts = max(1, int(kelly_bet * 100 / price))
                     ticker    = trade["market"].get("ticker", "?")
 
                     log.info(f"[TRADE] {ticker} | {trade['side'].upper()} {contracts}ct @ {price}¢ | "
