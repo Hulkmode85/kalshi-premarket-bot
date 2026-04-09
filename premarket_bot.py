@@ -7,6 +7,8 @@ Logic: If futures/pre-market shows SPY up 1%+ → buy YES on "SPY above X" marke
 
 import asyncio
 import os
+from flask import Flask, jsonify
+import threading
 import json
 import time
 import uuid
@@ -50,7 +52,7 @@ KALSHI_API_URL    = os.getenv("KALSHI_API_URL", f"{KALSHI_BASE}/trade-api/v2")
 KALSHI_API_KEY    = os.getenv("KALSHI_API_KEY", "")
 KALSHI_KEY_ID     = os.getenv("KALSHI_KEY_ID", "")
 PAPER_MODE        = os.getenv("PAPER_MODE", "true").lower() == "true"
-PAPER_BALANCE     = float(os.getenv("PAPER_BALANCE", "1000"))
+PAPER_BALANCE     = float(os.getenv("PAPER_BALANCE", "5000"))
 BET_SIZE_USD      = float(os.getenv("BET_SIZE_USD", "12"))
 MAX_BET_USD       = float(os.getenv("MAX_BET_USD", "35"))
 MIN_MOVE_PCT      = float(os.getenv("MIN_MOVE_PCT", "0.8"))   # min % premarket move to signal
@@ -283,17 +285,42 @@ class CooldownTracker:
         self._last[key] = datetime.now(timezone.utc)
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
+# ── Stats HTTP server ─────────────────────────────────────────────────────────
+_stats_app = Flask(__name__)
+_bot_stats = {"trades": 0, "wins": 0, "pnl": 0.0, "balance": 0.0, "start": time.time()}
+
+@_stats_app.route("/stats")
+def _stats_endpoint():
+    t = _bot_stats
+    total = t["trades"]
+    return jsonify({"bot": "kalshi-premarket-bot", "paper_mode": True,
+        "balance": t["balance"], "trades": total, "wins": t["wins"],
+        "losses": total - t["wins"], "win_rate": round(t["wins"]/max(total,1), 4),
+        "pnl": t["pnl"], "uptime_hours": round((time.time()-t["start"])/3600, 2)})
+
+@_stats_app.route("/health")
+def _health_endpoint():
+    return jsonify({"status": "ok"})
+
+def _run_stats_server():
+    _stats_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
+
 async def main():
     log.info(f"=== Kalshi Pre-Market Futures Bot (paper={PAPER_MODE}) ===")
     log.info(f"MIN_MOVE={MIN_MOVE_PCT}%, MIN_EDGE={MIN_EDGE*100:.0f}%, poll={POLL_INTERVAL_SEC}s")
     log.info(f"Tracking: {list(SYMBOLS.keys())}")
 
     paper    = PaperLedger()
+    _bot_stats['balance'] = paper.balance
+    threading.Thread(target=_run_stats_server, daemon=True).start()
     cooldown = CooldownTracker(minutes=120)
     trades   = 0
 
     async with httpx.AsyncClient() as client:
         while True:
+            _bot_stats["balance"] = paper.balance
+            _bot_stats["trades"] = len(paper.trades)
             log.info(f"--- Scan | bal=${paper.balance:.2f} | trades={trades} ---")
 
             for symbol, series_list in SYMBOLS.items():
